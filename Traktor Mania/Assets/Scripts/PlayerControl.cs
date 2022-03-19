@@ -20,8 +20,24 @@ public class PlayerControl : MonoBehaviour
     [SerializeField] private GameObject trailCollidersHolder;
     [SerializeField] private float minColliderDistnace = 1f;
     [SerializeField] private Collider playerCollider;
+    
+    [Header("Area")]
+    [SerializeField] private string areaName;
+    [SerializeField] private Material material;
+    [SerializeField] private Color color;
+
     private List<Vector3> colliderPositions;
     private List<SphereCollider> trailColliders = new List<SphereCollider>();
+    private GameObject area;
+    private List<Vector3> areaVertices;
+    private MeshRenderer areaMeshRender;
+    private MeshFilter areaMeshFilter;
+    private MeshCollider areaMeshCollider;
+
+    private void Start()
+    {
+        InitializePlayer();
+    }
 
     void Update()
     {
@@ -50,13 +66,28 @@ public class PlayerControl : MonoBehaviour
             if (IsFall())
                 GameManager.ChangeState(GameStates.End);
             
-            MoveForward();
+            Move();
 
             AddTrailCollider(transform.position);
         } 
     }
 
-    private void MoveForward()
+    private void InitializePlayer()
+    {
+        colliderPositions = new List<Vector3>();
+        trailColliders = new List<SphereCollider>();
+        areaVertices = new List<Vector3>();
+
+        area = new GameObject();
+        area.name = areaName;
+        areaMeshRender = area.AddComponent<MeshRenderer>();
+        areaMeshFilter = area.AddComponent<MeshFilter>();
+        areaMeshCollider = area.AddComponent<MeshCollider>();
+        areaMeshRender.material = material;
+        areaMeshRender.material.color = color;
+    }
+
+    private void Move()
     {
         transform.position += transform.forward * Multiply * speed;
     }
@@ -68,9 +99,6 @@ public class PlayerControl : MonoBehaviour
 
     private void AddTrailCollider(Vector3 position)
     {
-        if (colliderPositions == null)
-            colliderPositions = new List<Vector3>();
-        
         if (trailColliders.Count == 0 || (colliderPositions[colliderPositions.Count - 1] - position).magnitude >= minColliderDistnace)
         {
             colliderPositions.Add(position);
@@ -96,12 +124,81 @@ public class PlayerControl : MonoBehaviour
             Destroy(trailColliders[i]);
         }
 
+        areaVertices.Clear();
         trailColliders.Clear();
+    }
+
+    private Mesh GenerateMesh(List<Vector3> vertices, string meshName)
+    {
+        Triangulator triangulator = new Triangulator(ToVector2(areaVertices));
+        int[] meshTriangles = triangulator.Triangulate();
+
+        Mesh mesh = new Mesh();
+        mesh.vertices = vertices.ToArray();
+        mesh.triangles = meshTriangles;
+        mesh.RecalculateBounds();
+        mesh.RecalculateNormals();
+        mesh.name = areaName + "Mesh";
+
+        return mesh;
+    }
+
+    private void UpdateArea()
+    {
+        var mesh = GenerateMesh(areaVertices, name);
+        areaMeshFilter.mesh = mesh;
+        areaMeshCollider.sharedMesh = mesh;
     }
 
     private void OnTriggerEnter(Collider other)
     {
         if (other.tag == "Trail")
+        {
+            var targetPos = ((SphereCollider)other).center;
+            GetTrailVertices();
+            DeleteUnusedVertice(targetPos);
+            UpdateArea();
             DestroyTrail();
+        }
+            
+    }
+
+    private void DeleteUnusedVertice(Vector3 collisionPoint)
+    {
+        var lastIndex = GetIndexOfClosestVertice(collisionPoint);
+        if (areaVertices.Count > 0 && lastIndex > 0)
+            areaVertices.RemoveRange(0, lastIndex - 1);
+    }
+
+    private int GetIndexOfClosestVertice(Vector3 collisionPoint)
+    {
+        var magnitude = float.MaxValue;
+        int index = 0;
+        for (int i = 0; i < areaVertices.Count; i++)
+        {
+            float tempMag = (areaVertices[i] - collisionPoint).magnitude;
+            if (tempMag < magnitude)
+            {
+                magnitude = tempMag;
+                index = i;
+            }
+        }
+
+        return index;
+    }
+
+    private void GetTrailVertices()
+    {
+        for (int i = 0; i < trail.positionCount; i++)
+            areaVertices.Add(trail.GetPosition(i));
+    }
+
+    private List<Vector2> ToVector2(List<Vector3> vertices)
+    {
+        var vertices2D = new List<Vector2>();
+        for (int i = 0; i < vertices.Count; i++)
+            vertices2D.Add(new Vector2(vertices[i].x, vertices[i].z));
+
+        return vertices2D;
     }
 }
