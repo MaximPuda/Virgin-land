@@ -1,11 +1,14 @@
 using System.Collections.Generic;
+using System.Collections;
 using UnityEngine;
 
 public class PlayerControl : MonoBehaviour
 {
     [Header("Movement")]
-    [SerializeField] private int speed = 1;
+    [SerializeField] private float speed = 1;
     [SerializeField] private float turnSpeed = 15f;
+    [SerializeField] private bool freeMoving = false;
+    [SerializeField] private float swipeDeadZone = 100f;
 
     const float Multiply = 0.1f;
 
@@ -14,6 +17,7 @@ public class PlayerControl : MonoBehaviour
     private Vector2 delta;
     private Vector3 direction;
     private Quaternion targetRotation;
+    private bool isInsideArea;
 
     [Header("Trail")]
     [SerializeField] private TrailRenderer trail;
@@ -29,6 +33,7 @@ public class PlayerControl : MonoBehaviour
     private List<Vector3> colliderPositions;
     private List<SphereCollider> trailColliders = new List<SphereCollider>();
     private GameObject area;
+    private List<Vector3> trailVertices;
     private List<Vector3> areaVertices;
     private MeshRenderer areaMeshRender;
     private MeshFilter areaMeshFilter;
@@ -41,15 +46,46 @@ public class PlayerControl : MonoBehaviour
 
     void Update()
     {
-        if (Input.touchCount > 0)
+        if (GameManager.GameState == GameStates.Runing)
         {
-            touch = Input.touches[0];
-            if (touch.phase == TouchPhase.Began)
-                startSwipePosition = touch.position;
+            if (Input.GetKey(KeyCode.A))
+                direction = Vector3.left;
 
-            delta = touch.position - startSwipePosition;
-            direction = new Vector3(delta.x, 0, delta.y);
-            direction.Normalize();
+            if (Input.GetKey(KeyCode.D))
+                direction = Vector3.right;
+
+            if (Input.GetKey(KeyCode.W))
+                direction = Vector3.forward;
+
+            if (Input.GetKey(KeyCode.S))
+                direction = Vector3.back;
+
+            if (Input.touchCount > 0)
+            {
+                if (freeMoving)
+                    FreeMoving();
+                else
+                    LockMoving();
+            }
+
+            AddTrailCollider(transform.position);
+
+            if (areaVertices != null && areaVertices.Count > 0)
+            {
+                isInsideArea = IsPointInPolygon(new Vector2(transform.position.x, transform.position.z), ToVector2(areaVertices));
+                if (isInsideArea)
+                {
+                    if (trail.positionCount > 0)
+                    {
+                        DeformArea();
+                    }
+
+                    DestroyTrail();
+                    trail.emitting = false;
+                }
+                else
+                    trail.emitting = true;
+            }
         }
     }
     
@@ -62,13 +98,8 @@ public class PlayerControl : MonoBehaviour
                 targetRotation = Quaternion.LookRotation(direction);
                 transform.rotation = Quaternion.RotateTowards(transform.rotation, targetRotation, turnSpeed);
             }
-            
-            if (IsFall())
-                GameManager.ChangeState(GameStates.End);
-            
-            Move();
 
-            AddTrailCollider(transform.position);
+            Move();
         } 
     }
 
@@ -76,13 +107,13 @@ public class PlayerControl : MonoBehaviour
     {
         colliderPositions = new List<Vector3>();
         trailColliders = new List<SphereCollider>();
-        areaVertices = new List<Vector3>();
+        trailVertices = new List<Vector3>();
 
         area = new GameObject();
+        area.tag = "Area";
         area.name = areaName;
         areaMeshRender = area.AddComponent<MeshRenderer>();
         areaMeshFilter = area.AddComponent<MeshFilter>();
-        areaMeshCollider = area.AddComponent<MeshCollider>();
         areaMeshRender.material = material;
         areaMeshRender.material.color = color;
     }
@@ -92,9 +123,38 @@ public class PlayerControl : MonoBehaviour
         transform.position += transform.forward * Multiply * speed;
     }
 
-    private bool IsFall()
+    private void FreeMoving()
     {
-        return transform.position.y < 0;
+        touch = Input.touches[0];
+        if (touch.phase == TouchPhase.Began)
+            startSwipePosition = touch.position;
+
+        delta = touch.position - startSwipePosition;
+        direction = new Vector3(delta.x, 0, delta.y);
+        direction.Normalize();
+    }
+
+    private void LockMoving()
+    {
+        touch = Input.touches[0];
+        if (touch.phase == TouchPhase.Began)
+            startSwipePosition = touch.position;
+
+        delta = touch.position - startSwipePosition;
+        if(Mathf.Abs(delta.x) > Mathf.Abs(delta.y))
+        {
+            if (delta.x > 0 && delta.x > swipeDeadZone)
+                direction = Vector3.right;
+            else if(delta.x < -swipeDeadZone)
+                direction = Vector3.left;
+        }
+        else
+        {
+            if (delta.y > 0 && delta.y > swipeDeadZone)
+                direction = Vector3.forward;
+            else if(delta.y < -swipeDeadZone)
+                direction = Vector3.back;
+        }
     }
 
     private void AddTrailCollider(Vector3 position)
@@ -124,12 +184,13 @@ public class PlayerControl : MonoBehaviour
             Destroy(trailColliders[i]);
         }
 
-        areaVertices.Clear();
+        trailVertices.Clear();
         trailColliders.Clear();
     }
 
     private Mesh GenerateMesh(List<Vector3> vertices, string meshName)
     {
+        areaVertices = new List<Vector3>(trailVertices);
         Triangulator triangulator = new Triangulator(ToVector2(areaVertices));
         int[] meshTriangles = triangulator.Triangulate();
 
@@ -138,45 +199,93 @@ public class PlayerControl : MonoBehaviour
         mesh.triangles = meshTriangles;
         mesh.RecalculateBounds();
         mesh.RecalculateNormals();
+        mesh.RecalculateTangents();
         mesh.name = areaName + "Mesh";
 
         return mesh;
     }
 
+    private void DeformArea()
+    {
+        GetTrailVertices();
+        int startNewAreaPoint = GetIndexOfClosestVertice(areaVertices, trailVertices[0]);
+        var mag = Mathf.Abs((trailVertices[0] - areaVertices[startNewAreaPoint]).magnitude);
+        if (mag < 0.4f)
+        {
+            int endNewAreaPoint = GetIndexOfClosestVertice(areaVertices, transform.position);
+
+            var firstNewArea = new List<Vector3>(trailVertices);
+            for (int i = endNewAreaPoint; i != startNewAreaPoint; i++)
+            {
+                if (i == areaVertices.Count)
+                {
+                    if (startNewAreaPoint == 0)
+                        break;
+
+                    i = 0;
+                }
+                firstNewArea.Add(areaVertices[i]);
+            }
+
+            var secondNewArea = new List<Vector3>(trailVertices);
+            for (int i = startNewAreaPoint; i != endNewAreaPoint; i++)
+            {
+                if (i == areaVertices.Count)
+                {
+                    if (endNewAreaPoint == 0)
+                        break;
+
+                    i = 0;
+                }
+                secondNewArea.Insert(0, areaVertices[i]);
+            }
+
+            trailVertices = firstNewArea.Count > secondNewArea.Count ? firstNewArea : secondNewArea;
+
+            UpdateArea();
+        }
+    }
+
     private void UpdateArea()
     {
-        var mesh = GenerateMesh(areaVertices, name);
+        var mesh = GenerateMesh(trailVertices, name);
         areaMeshFilter.mesh = mesh;
-        areaMeshCollider.sharedMesh = mesh;
     }
 
     private void OnTriggerEnter(Collider other)
     {
         if (other.tag == "Trail")
         {
-            var targetPos = ((SphereCollider)other).center;
-            GetTrailVertices();
-            DeleteUnusedVertice(targetPos);
-            UpdateArea();
+            if (areaVertices == null)
+            {
+                var targetPos = ((SphereCollider)other).center;
+                GetTrailVertices();
+                DeleteUnusedVertice(trailVertices, targetPos);
+                UpdateArea();
+                DestroyTrail();
+            }
             DestroyTrail();
-        }
-            
+            trail.emitting = false;
+        }    
     }
 
-    private void DeleteUnusedVertice(Vector3 collisionPoint)
+    private void DeleteUnusedVertice(List<Vector3> vertices, Vector3 collisionPoint)
     {
-        var lastIndex = GetIndexOfClosestVertice(collisionPoint);
-        if (areaVertices.Count > 0 && lastIndex > 0)
-            areaVertices.RemoveRange(0, lastIndex - 1);
+        var lastIndex = GetIndexOfClosestVertice(trailVertices, collisionPoint);
+        if (vertices.Count > 0 && lastIndex > 0)
+            for (int i = 0; i < lastIndex; i++)
+            {
+                vertices.RemoveAt(0);
+            }
     }
 
-    private int GetIndexOfClosestVertice(Vector3 collisionPoint)
+    private int GetIndexOfClosestVertice(List<Vector3> vertices, Vector3 collisionPoint)
     {
         var magnitude = float.MaxValue;
         int index = 0;
-        for (int i = 0; i < areaVertices.Count; i++)
+        for (int i = 0; i < vertices.Count; i++)
         {
-            float tempMag = (areaVertices[i] - collisionPoint).magnitude;
+            float tempMag = (vertices[i] - collisionPoint).magnitude;
             if (tempMag < magnitude)
             {
                 magnitude = tempMag;
@@ -190,7 +299,26 @@ public class PlayerControl : MonoBehaviour
     private void GetTrailVertices()
     {
         for (int i = 0; i < trail.positionCount; i++)
-            areaVertices.Add(trail.GetPosition(i));
+            trailVertices.Add(trail.GetPosition(i));
+    }
+
+    public static bool IsPointInPolygon(Vector2 point, List<Vector2> polygon)
+    {
+        int polygonLength = polygon.Count, i = 0;
+        bool inside = false;
+        float pointX = point.x, pointY = point.y;
+        float startX, startY, endX, endY;
+        Vector2 endPoint = polygon[polygonLength - 1];
+        endX = endPoint.x;
+        endY = endPoint.y;
+        while (i < polygonLength)
+        {
+            startX = endX; startY = endY;
+            endPoint = polygon[i++];
+            endX = endPoint.x; endY = endPoint.y;
+            inside ^= (endY > pointY ^ startY > pointY) && ((pointX - endX) < (pointY - endY) * (startX - endX) / (startY - endY));
+        }
+        return inside;
     }
 
     private List<Vector2> ToVector2(List<Vector3> vertices)

@@ -39,9 +39,9 @@ public class GameManager : MonoBehaviour
         Debug.Log("Game Over!");
     }
 
-    static private void Restart()
+    static public void Restart()
     {
-        SceneManager.LoadScene("Game");
+        SceneManager.LoadScene(SceneManager.GetActiveScene().name);
     }
 }
 
