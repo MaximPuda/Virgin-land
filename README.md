@@ -1,2 +1,2 @@
-# Virgin land
+# Traktor Mania
 Prototype of mobile puzzle game
